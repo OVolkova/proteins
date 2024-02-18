@@ -35,9 +35,9 @@ class DeeperGCN(torch.nn.Module):
             )
             self.layers.append(layer)
 
-        self.lin = Linear(config.d_embed, self.d_node_out)
+        self.linear = Linear(config.d_embed, config.d_node_out)
 
-    def forward(self, x, edge_index, edge_attr):
+    def forward(self, x, edge_index, edge_attr, device=None):
         x = self.node_encoder(x)
         edge_attr = self.edge_encoder(edge_attr)
 
@@ -49,4 +49,4 @@ class DeeperGCN(torch.nn.Module):
         x = self.layers[0].act(self.layers[0].norm(x))
         x = F.dropout(x, p=0.1, training=self.training)
 
-        return self.lin(x)
+        return self.linear(x), None

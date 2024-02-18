@@ -1,68 +1,66 @@
-import pytorch_lightning as pl
+import lightning as L
 import torch
 from ogb.nodeproppred import Evaluator
 
 
-class TrainerProteins(pl.LightningModule):
+class TrainerProteins(L.LightningModule):
     def __init__(
         self,
-        model_class,
-        model_config,
+        models,
         training_config,
     ):
         super().__init__()
 
-        self.model = model_class(model_config)
+        self.model = models[0]
         self.loss = torch.nn.BCEWithLogitsLoss()
         self.evaluator = Evaluator("ogbn-proteins")
         self.training_config = training_config
 
-    def forward(self, x):
+        self.test_y_true = {"train": [], "valid": [], "test": []}
+        self.test_y_pred = {"train": [], "valid": [], "test": []}
+
+        self.save_hyperparameters()
+
+    def forwar(self, x):
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
+        if batch.x.shape[0] == 0:
+            return
         data = batch.to(self.device)
-        out = self.model(data.x, data.edge_index, data.edge_attr)
+        out, _ = self.model(data.x, data.edge_index, data.edge_attr, device=self.device)
         loss = self.loss(out[data.train_mask], data.y[data.train_mask])
         self.log("train loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        y_true = {"train": [], "valid": [], "test": []}
-        y_pred = {"train": [], "valid": [], "test": []}
-
+        if batch.x.shape[0] == 0:
+            return
         data = batch.to(self.device)
-        out = self.model(data.x, data.edge_index, data.edge_attr)
+        out, _ = self.model(data.x, data.edge_index, data.edge_attr, device=self.device)
 
-        for split in y_true.keys():
+        for split in self.test_y_true.keys():
             mask = data[f"{split}_mask"]
-            y_true[split].append(data.y[mask].cpu())
-            y_pred[split].append(out[mask].cpu())
+            self.test_y_true[split].append(data.y[mask].detach())
+            self.test_y_pred[split].append(out[mask].detach())
 
-        train_rocauc = self.evaluator.eval(
-            {
-                "y_true": torch.cat(y_true["train"], dim=0),
-                "y_pred": torch.cat(y_pred["train"], dim=0),
-            }
-        )["rocauc"]
+    def roc_auc_for_split(self, split):
+        if torch.cat(self.test_y_true[split], dim=0).size()[0] > 0:
+            train_rocauc = self.evaluator.eval(
+                {
+                    "y_true": torch.cat(self.test_y_true[split], dim=0),
+                    "y_pred": torch.cat(self.test_y_pred[split], dim=0),
+                }
+            )["rocauc"]
+            self.log(split + "_rocauc", train_rocauc)
 
-        valid_rocauc = self.evaluator.eval(
-            {
-                "y_true": torch.cat(y_true["valid"], dim=0),
-                "y_pred": torch.cat(y_pred["valid"], dim=0),
-            }
-        )["rocauc"]
+        self.test_y_true[split] = []
+        self.test_y_pred[split] = []
 
-        test_rocauc = self.evaluator.eval(
-            {
-                "y_true": torch.cat(y_true["test"], dim=0),
-                "y_pred": torch.cat(y_pred["test"], dim=0),
-            }
-        )["rocauc"]
-
-        self.log("train_rocauc", train_rocauc)
-        self.log("valid_rocauc", valid_rocauc)
-        self.log("test_rocauc", test_rocauc)
+    def on_validation_epoch_end(self):
+        self.roc_auc_for_split("train")
+        self.roc_auc_for_split("valid")
+        self.roc_auc_for_split("test")
 
     def configure_optimizers(self):
         return torch.optim.Adam(

@@ -22,6 +22,7 @@ class GraphTransformerConfig:
         d_edge_in=20,
         d_node_out=10,
         d_edge_out=20,
+        simple_attention=False,
     ):
         self.d_embed = d_embed
         self.n_heads = n_heads
@@ -45,9 +46,10 @@ class GraphTransformerConfig:
         self.d_edge_in = d_edge_in
         self.d_node_out = d_node_out
         self.d_edge_out = d_edge_out
+        self.simple_attention = simple_attention
 
 
 class TrainingConfig:
-    lr = 1e-2
+    lr = 1e-3
     betas = (0.9, 0.98)
     eps = 1e-9

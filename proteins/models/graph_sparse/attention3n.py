@@ -8,7 +8,7 @@ from proteins.models.config import GraphTransformerConfig
 
 
 def get_indices_to_reduce_from_n3_shape(
-    edge_index: torch.Tensor,
+    edge_index: torch.Tensor, device: Optional[torch.device] = None
 ) -> (torch.Tensor, torch.Tensor):
     """
     Function to prepare indices for sparse matrix multiplication on n*n*n.
@@ -30,14 +30,23 @@ def get_indices_to_reduce_from_n3_shape(
     nodes, counts = torch.unique(edge_index[0, :], return_counts=True)
     cum_sum = torch.cumsum(counts, dim=0)
     cum_sum = torch.stack(
-        [torch.hstack([torch.tensor([0]), cum_sum])[:-1], cum_sum, counts]
+        [
+            torch.hstack(
+                [torch.tensor([0], dtype=torch.int64, device=device), cum_sum]
+            )[:-1],
+            cum_sum,
+            counts,
+        ]
     )
     eik = torch.cat(
-        [torch.arange(s, e, dtype=torch.int64).repeat(r) for s, e, r in cum_sum.T]
+        [
+            torch.arange(s, e, dtype=torch.int64, device=device).repeat(r)
+            for s, e, r in cum_sum.T
+        ]
     )
     eiq = torch.cat(
         [
-            torch.arange(s, e, dtype=torch.int64)
+            torch.arange(s, e, dtype=torch.int64, device=device)
             .repeat((r, 1))
             .transpose(0, 1)
             .reshape(r**2)
@@ -83,14 +92,19 @@ class MultiHeadGraphAttention(nn.Module):
         self.linear_dropout = nn.Dropout(config.linear_dropout)
 
         # edges features
-        self.edge_queries = nn.Linear(config.d_e_embed, config.d_e_embed * config.e_heads)
-        self.edge_values = nn.Linear(config.d_e_embed, config.d_e_embed * config.e_heads)
+        self.edge_queries = nn.Linear(
+            config.d_e_embed, config.d_e_embed * config.e_heads
+        )
+        self.edge_values = nn.Linear(
+            config.d_e_embed, config.d_e_embed * config.e_heads
+        )
         self.edge_nodes_keys = nn.Linear(
             config.n_heads, config.d_e_embed * config.e_heads
         )
         #  to do: edge embeddings linear layer for matching size on dif.blocks
         self.edge_attention_dropout = nn.Dropout(config.edge_attention_dropout)
         self.edge_linear = nn.Linear(config.e_heads * config.d_e_embed, config.n_heads)
+        self.edge_linear_embedding = nn.Linear(config.n_heads, config.d_e_embed)
         self.edge_linear_dropout = nn.Dropout(config.edge_linear_dropout)
 
         self.apply(self.init_weights)
@@ -117,14 +131,14 @@ class MultiHeadGraphAttention(nn.Module):
 
         e_dim = eq.shape[1] // self.e_heads
 
-        # dense:(n_nodes, n_heads * hidden_size) -> (n_nodes, n_heads, hidden_size) -> (n_heads, n_nodes, hidden_size)
+        # dense:(nodes, n_nodes, n_heads * hidden_size) -> (nodes, n_nodes, n_heads, hidden_size) -> (nodes, n_heads, n_nodes, hidden_size)
         # sparse: (n_edges, n_heads, hidden_size)
         ev = ev.view(-1, self.e_heads, e_dim)
         eq = eq.view(-1, self.e_heads, e_dim)
         ek = ek.view(-1, self.e_heads, e_dim)
 
-        # dense: (n_heads, n_heads, n_nodes, hidden_size) * (n_heads,  n_heads, hidden_size, n_nodes)
-        #   = (n_heads, n_heads, n_nodes, n_nodes)
+        # dense: (n_heads, n_nodes, n_nodes, hidden_size) * (n_heads,  n_nodes, hidden_size, n_nodes)
+        #   = (n_heads, n_nodes, n_nodes, n_nodes)
         # sparse: -> (n_edges_for_3n_operations, n_heads)
         scaled_eqk = (eq[eiq, :, :] * ek[eik, :, :]).sum(-1) / torch.sqrt(
             torch.tensor(ek.size(-1))
@@ -139,8 +153,8 @@ class MultiHeadGraphAttention(nn.Module):
         scaled_eqk = self.edge_attention_dropout(scaled_eqk)
 
         # matmul
-        # dense: (n_heads, n_heads, n_nodes, n_nodes) * (n_heads, n_heads, n_nodes, hidden_size)
-        #   =  (n_heads, n_heads, n_nodes, hidden_size)
+        # dense: (n_heads, n_nodes, n_nodes, n_nodes) * (n_heads, n_nodes, n_nodes, hidden_size)
+        #   =  (n_heads, n_nodes, n_nodes, hidden_size)
         # sparse: -> (n_edges, n_heads, hidden_size)
         output = scatter(
             src=scaled_eqk.unsqueeze(-1) * ev[eik, :, :],
@@ -191,8 +205,9 @@ class MultiHeadGraphAttention(nn.Module):
         )
 
         # softmax
+        # print(5, scaled_qk.shape, edge_index[0].shape, n_nodes, edge_embeddings.shape)
         scaled_qk = softmax(
-            src=edge_embeddings + scaled_qk,
+            src=edge_embeddings + scaled_qk.T,
             index=edge_index[0],
             num_nodes=n_nodes,
         )
@@ -212,6 +227,9 @@ class MultiHeadGraphAttention(nn.Module):
         node_embeddings = node_embeddings.view(n_nodes, self.n_heads * n_dim)
         node_embeddings = self.linear(node_embeddings)
         node_embeddings = self.linear_dropout(node_embeddings)
+
+        edge_embeddings = self.edge_linear_embedding(edge_embeddings)
+        edge_embeddings = self.linear_dropout(edge_embeddings)
 
         return node_embeddings, edge_embeddings
 

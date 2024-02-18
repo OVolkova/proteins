@@ -45,8 +45,12 @@ class MultiHeadGraphAttention(nn.Module):
         self.linear_dropout = nn.Dropout(config.linear_dropout)
 
         # edges features
-        self.edge_queries = nn.Linear(config.d_e_embed, config.d_e_embed * config.n_heads)
-        self.edge_values = nn.Linear(config.d_e_embed, config.d_e_embed * config.n_heads)
+        self.edge_queries = nn.Linear(
+            config.d_e_embed, config.d_e_embed * config.n_heads
+        )
+        self.edge_values = nn.Linear(
+            config.d_e_embed, config.d_e_embed * config.n_heads
+        )
         self.edge_nodes_keys = nn.Linear(
             config.n_heads, config.d_e_embed * config.n_heads
         )
@@ -99,7 +103,9 @@ class MultiHeadGraphAttention(nn.Module):
         # (B, n_heads, T1, T2, T2) * (B, n_heads, T1, T2, hidden_size) = (B, n_heads, T1, T2, hidden_size)
         output1 = torch.matmul(attention_weights1, v)
         # (B, n_heads, T2, T1, T1) * (B, n_heads, T2, T1, hidden_size) = (B, n_heads, T1, T2, hidden_size)
-        output2 = torch.matmul(attention_weights2, v.transpose(-3, -2)).transpose(-3, -2)
+        output2 = torch.matmul(attention_weights2, v.transpose(-3, -2)).transpose(
+            -3, -2
+        )
         output = output1 + output2
 
         # (B, n_heads, T1, T2, hidden_size) ->  (B, T2, T1, n_heads, hidden_size) -> (B, T2, T1, n_heads * hidden_size)

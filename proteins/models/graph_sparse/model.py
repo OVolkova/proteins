@@ -1,13 +1,15 @@
 from collections import OrderedDict
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 
 from proteins.models.config import GraphTransformerConfig
-from proteins.models.graph_sparse.attention import (
+from proteins.models.graph_sparse.attention3n import (
     MultiHeadGraphAttention,
     get_indices_to_reduce_from_n3_shape,
 )
+from proteins.models.graph_sparse.attention2n import MultiHeadSimpleGraphAttention
 
 
 class GraphAttentionLayer(nn.Module):
@@ -19,7 +21,12 @@ class GraphAttentionLayer(nn.Module):
 
     def __init__(self, config: GraphTransformerConfig):
         super().__init__()
-        self.attention = MultiHeadGraphAttention(config)
+
+        if config.simple_attention:
+            self.attention = MultiHeadSimpleGraphAttention(config)
+        else:
+            self.attention = MultiHeadGraphAttention(config)
+
         self.layer_norm_x = nn.LayerNorm(config.d_embed, config.layer_norm_eps)
         self.layer_norm_e = nn.LayerNorm(config.d_e_embed, config.layer_norm_eps)
 
@@ -28,7 +35,9 @@ class GraphAttentionLayer(nn.Module):
         x: torch.Tensor,
         edge_index: torch.Tensor,
         edge_features: torch.Tensor,
-        indices_to_reduce_from_n3_shape: (torch.Tensor, torch.Tensor),
+        indices_to_reduce_from_n3_shape: Optional[
+            Tuple[torch.Tensor, torch.Tensor]
+        ] = None,
     ):
         out_x, out_e = self.attention(
             self.layer_norm_x(x),
@@ -99,7 +108,9 @@ class ModelBlock(nn.Module):
         x: torch.Tensor,
         edge_index: torch.Tensor,
         edge_features: torch.Tensor,
-        indices_to_reduce_from_n3_shape: (torch.Tensor, torch.Tensor),
+        indices_to_reduce_from_n3_shape: Optional[
+            Tuple[torch.Tensor, torch.Tensor]
+        ] = None,
     ):
         for layer in self.layers:
             x, edge_features = layer(
@@ -137,7 +148,9 @@ class GraphTransformerLayer(nn.Module):
         x: torch.Tensor,
         edge_index: torch.Tensor,
         edge_features: torch.Tensor,
-        indices_to_reduce_from_n3_shape: (torch.Tensor, torch.Tensor),
+        indices_to_reduce_from_n3_shape: Optional[
+            Tuple[torch.Tensor, torch.Tensor]
+        ] = None,
     ):
         x, edge_features = self.self_attention(
             x, edge_index, edge_features, indices_to_reduce_from_n3_shape
@@ -157,6 +170,8 @@ class GraphTransformer(nn.Module):
         config: GraphTransformerConfig,
     ):
         super().__init__()
+        self.is_simple_attention = config.simple_attention
+
         self.node_embedding = nn.Linear(
             config.d_node_in, config.d_embed, bias=config.bias_embed
         )
@@ -165,27 +180,35 @@ class GraphTransformer(nn.Module):
         )
         self.encoder = ModelBlock(config, GraphTransformerLayer)
 
-        self.node_linear = nn.Linear(config.d_embed, config.d_node_out)
-        self.edge_linear = nn.Linear(config.d_e_embed, config.d_edge_out)
+        self.layer_norm_modes = nn.LayerNorm(config.d_embed, config.layer_norm_eps)
+        self.layer_norm_edges = nn.LayerNorm(config.d_e_embed, config.layer_norm_eps)
 
     def forward(
         self,
         x: torch.Tensor,
         edge_index: torch.Tensor,
         edge_features: torch.Tensor,
+        device: str = None,
+        return_edge_features: bool = False,
     ):
-        indices_to_reduce_from_n3_shape = get_indices_to_reduce_from_n3_shape(edge_index)
+        if self.is_simple_attention:
+            indices_to_reduce_from_n3_shape = None
+        else:
+            indices_to_reduce_from_n3_shape = get_indices_to_reduce_from_n3_shape(
+                edge_index, device=device
+            )
+
         x = self.node_embedding(x)
         edge_features = self.edge_embedding(edge_features)
         x, edge_features = self.encoder(
             x, edge_index, edge_features, indices_to_reduce_from_n3_shape
         )
-        x = self.node_linear(x)
-        edge_features = self.edge_linear(edge_features)
+        x = self.layer_norm_modes(x)
+        edge_features = self.layer_norm_edges(edge_features)
         return x, edge_features
 
 
 if __name__ == "__main__":
-    config_ = GraphTransformerConfig()
+    config_ = GraphTransformerConfig(simple_attention=False)
     model = GraphTransformer(config_)
     print(model)
